@@ -1,448 +1,943 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 const TOTAL_CUPS = 8;
+const CUPS_PER_TYPE = 4;
 const CUPS_TO_SELECT = 4;
 const SIGNIFICANCE_LEVEL = 0.05;
 
-// 機率分布表 (Probability Distribution Table)
-const PROBABILITY_TABLE = [
-  { correct: 4, ways: 1, p: 1 / 70, formula: 'C(4,4) × C(4,0)' },
-  { correct: 3, ways: 16, p: 16 / 70, formula: 'C(4,3) × C(4,1)' },
-  { correct: 2, ways: 36, p: 36 / 70, formula: 'C(4,2) × C(4,2)' },
-  { correct: 1, ways: 16, p: 16 / 70, formula: 'C(4,1) × C(4,3)' },
-  { correct: 0, ways: 1, p: 1 / 70, formula: 'C(4,0) × C(4,4)' },
-];
+const combination = (n, k) => {
+  if (k < 0 || k > n) return 0;
+  const smallerK = Math.min(k, n - k);
+  let result = 1;
+
+  for (let i = 1; i <= smallerK; i += 1) {
+    result = (result * (n - smallerK + i)) / i;
+  }
+
+  return Math.round(result);
+};
+
+const buildProbabilityTable = (cupsPerType = CUPS_PER_TYPE) => {
+  const denominator = combination(cupsPerType * 2, cupsPerType);
+
+  return Array.from({ length: cupsPerType + 1 }, (_, correct) => {
+    const ways =
+      combination(cupsPerType, correct) *
+      combination(cupsPerType, cupsPerType - correct);
+
+    return {
+      correct,
+      ways,
+      probability: ways / denominator,
+      formula: `C(${cupsPerType},${correct}) × C(${cupsPerType},${
+        cupsPerType - correct
+      })`,
+    };
+  });
+};
+
+const PROBABILITY_TABLE = buildProbabilityTable();
+
+const getPointProbability = (correct, table = PROBABILITY_TABLE) =>
+  table.find((row) => row.correct === correct)?.probability ?? 0;
+
+// 單尾檢定：H1 是「正確辨別能力優於隨機猜測」，因此累加 X >= x_obs。
+const getOneSidedPValue = (observedCorrect, table = PROBABILITY_TABLE) =>
+  table
+    .filter((row) => row.correct >= observedCorrect)
+    .reduce((sum, row) => sum + row.probability, 0);
+
+const formatProbability = (value, digits = 4) => value.toFixed(digits);
+const formatPercent = (value, digits = 1) => `${(value * 100).toFixed(digits)}%`;
+
+const shuffle = (items) => {
+  const result = [...items];
+
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+
+  return result;
+};
+
+const createRandomizedCups = () =>
+  shuffle([
+    ...Array.from({ length: CUPS_PER_TYPE }, (_, index) => ({
+      id: `milk-${index + 1}`,
+      type: 'MilkFirst',
+    })),
+    ...Array.from({ length: CUPS_PER_TYPE }, (_, index) => ({
+      id: `tea-${index + 1}`,
+      type: 'TeaFirst',
+    })),
+  ]);
+
+const drawFromNullExperiment = () =>
+  shuffle([
+    ...Array(CUPS_PER_TYPE).fill(1),
+    ...Array(CUPS_PER_TYPE).fill(0),
+  ])
+    .slice(0, CUPS_TO_SELECT)
+    .reduce((sum, isMilkFirst) => sum + isMilkFirst, 0);
+
+function HypothesisLabel({ subscript }) {
+  return (
+    <span className="font-serif italic">
+      H<sub>{subscript}</sub>
+    </span>
+  );
+}
 
 export default function LadyTastingTea() {
   const [step, setStep] = useState(1);
   const [hypothesisChoice, setHypothesisChoice] = useState(null);
-  
-  // 杯子狀態 (Cup State)
   const [cups, setCups] = useState([]);
   const [selectedCupIds, setSelectedCupIds] = useState([]);
   const [experimentResult, setExperimentResult] = useState(null);
   const [interactiveCount, setInteractiveCount] = useState(4);
+  const [simulation, setSimulation] = useState(null);
+  const [designCupsPerType, setDesignCupsPerType] = useState(4);
 
-  // 初始化隨機茶杯 (Randomize Cups)
-  const initCups = () => {
-    let newCups = [
-      { id: 1, type: 'MilkFirst' }, { id: 2, type: 'MilkFirst' },
-      { id: 3, type: 'MilkFirst' }, { id: 4, type: 'MilkFirst' },
-      { id: 5, type: 'TeaFirst' }, { id: 6, type: 'TeaFirst' },
-      { id: 7, type: 'TeaFirst' }, { id: 8, type: 'TeaFirst' }
-    ];
-    // Fisher-Yates Shuffle
-    for (let i = newCups.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [newCups[i], newCups[j]] = [newCups[j], newCups[i]];
-    }
-    setCups(newCups);
+  const initializeExperiment = () => {
+    setCups(createRandomizedCups());
     setSelectedCupIds([]);
     setExperimentResult(null);
     setInteractiveCount(4);
+    setSimulation(null);
   };
 
   useEffect(() => {
-    initCups();
+    initializeExperiment();
   }, []);
 
   const toggleCupSelection = (id) => {
-    if (selectedCupIds.includes(id)) {
-      setSelectedCupIds(selectedCupIds.filter(cupId => cupId !== id));
-    } else {
-      if (selectedCupIds.length < CUPS_TO_SELECT) {
-        setSelectedCupIds([...selectedCupIds, id]);
+    setSelectedCupIds((currentSelection) => {
+      if (currentSelection.includes(id)) {
+        return currentSelection.filter((cupId) => cupId !== id);
       }
-    }
+
+      if (currentSelection.length >= CUPS_TO_SELECT) {
+        return currentSelection;
+      }
+
+      return [...currentSelection, id];
+    });
   };
 
   const submitExperiment = () => {
-    const selectedCups = cups.filter(cup => selectedCupIds.includes(cup.id));
-    const correctCount = selectedCups.filter(cup => cup.type === 'MilkFirst').length;
-    setExperimentResult(correctCount);
-    setInteractiveCount(correctCount);
+    if (selectedCupIds.length !== CUPS_TO_SELECT) return;
+
+    const correctlySelectedMilkFirst = cups.filter(
+      (cup) =>
+        selectedCupIds.includes(cup.id) && cup.type === 'MilkFirst',
+    ).length;
+
+    setExperimentResult(correctlySelectedMilkFirst);
+    setInteractiveCount(correctlySelectedMilkFirst);
     setStep(4);
   };
 
+  const runNullSimulation = (runs) => {
+    const counts = Array(CUPS_PER_TYPE + 1).fill(0);
+
+    for (let i = 0; i < runs; i += 1) {
+      counts[drawFromNullExperiment()] += 1;
+    }
+
+    setSimulation({ runs, counts });
+  };
+
+  const restartStory = () => {
+    setStep(1);
+    setHypothesisChoice(null);
+    initializeExperiment();
+  };
+
+  const repeatExperiment = () => {
+    initializeExperiment();
+    setStep(3);
+  };
+
+  const designInfo = useMemo(() => {
+    const table = buildProbabilityTable(designCupsPerType);
+    const criticalRow = table.find(
+      (row) =>
+        getOneSidedPValue(row.correct, table) <= SIGNIFICANCE_LEVEL + 1e-12,
+    );
+
+    return {
+      table,
+      criticalCorrect: criticalRow?.correct ?? null,
+      actualAlpha:
+        criticalRow === undefined
+          ? 0
+          : getOneSidedPValue(criticalRow.correct, table),
+    };
+  }, [designCupsPerType]);
+
   const renderStep1 = () => (
-    <div className="space-y-6 animate-fade-in">
-      <h2 className="text-2xl font-bold text-amber-900 border-b-2 border-amber-200 pb-2">
-        第一幕：劍橋的午後 (A Summer Afternoon in Cambridge)
+    <section className="space-y-6 animate-fade-in" aria-labelledby="step-1-title">
+      <h2
+        id="step-1-title"
+        className="border-b-2 border-amber-200 pb-2 text-2xl font-bold text-amber-900"
+      >
+        第一幕：劍橋的午後
+        <span className="ml-2 text-base font-medium text-amber-700">
+          A Summer Afternoon in Cambridge
+        </span>
       </h2>
+
       <p className="text-lg leading-relaxed text-stone-700">
-        時間回到 1920 年代後期，英國劍橋的一個夏日午後。一群學者正享用著下午茶。
-        此時，藻類學家 <strong>穆麗爾·布里斯托 (Muriel Bristol)</strong> 提出了一個驚人的主張：
+        時間回到 1920 年代後期，英國劍橋的一場下午茶。藻類學家{' '}
+        <strong>穆麗爾・布里斯托（Muriel Bristol）</strong>提出一項主張：
       </p>
-      <blockquote className="border-l-4 border-amber-500 bg-amber-50 p-4 text-amber-900 italic rounded-r-lg shadow-sm">
-        「把茶加進奶裡，和把奶加進茶裡，品嚐起來的味道是完全不同的！」
+
+      <blockquote className="rounded-r-lg border-l-4 border-amber-500 bg-amber-50 p-4 italic text-amber-900 shadow-sm">
+        「把茶倒入奶中，和把奶倒入茶中，喝起來並不一樣；我可以分辨兩者。」
       </blockquote>
+
       <p className="text-lg leading-relaxed text-stone-700">
-        在場的科學菁英對此嗤之以鼻，認為化學成分相同，味道不可能有差異。然而，一位名叫 <strong>羅納德·費雪 (Ronald A. Fisher)</strong> 的先生卻非常感興趣，他提議：「讓我們來檢驗這個命題吧！」
+        有人對這項主張抱持懷疑。統計學家{' '}
+        <strong>羅納德・費雪（Ronald A. Fisher）</strong>
+        沒有只靠爭論決定誰對誰錯，而是把問題轉換成一個可以用資料檢驗的隨機化實驗。
       </p>
-      <div className="flex justify-end mt-8">
-        <button 
+
+      <div className="rounded-xl border border-blue-200 bg-blue-50 p-5 text-blue-900">
+        <h3 className="mb-2 font-bold">這個案例真正重要的地方</h3>
+        <p className="leading-relaxed">
+          它不只是計算「猜中的機率」，而是展示如何先定義研究問題、控制實驗條件、進行隨機化，最後才根據機率作出有限度的科學結論。
+        </p>
+      </div>
+
+      <div className="flex justify-end pt-2">
+        <button
+          type="button"
           onClick={() => setStep(2)}
-          className="bg-amber-700 hover:bg-amber-800 text-white px-6 py-2 rounded shadow-md transition-colors font-medium text-lg"
+          className="rounded-lg bg-amber-700 px-6 py-3 text-lg font-medium text-white shadow-md transition-colors hover:bg-amber-800 focus:outline-none focus:ring-4 focus:ring-amber-200"
         >
-          進入第二幕：設立假說 ➡️
+          進入第二幕：設立假說 →
         </button>
       </div>
-    </div>
+    </section>
   );
 
   const renderStep2 = () => (
-    <div className="space-y-6 animate-fade-in">
-      <h2 className="text-2xl font-bold text-amber-900 border-b-2 border-amber-200 pb-2">
-        第二幕：設立假說 (Setting the Hypothesis)
+    <section className="space-y-6 animate-fade-in" aria-labelledby="step-2-title">
+      <h2
+        id="step-2-title"
+        className="border-b-2 border-amber-200 pb-2 text-2xl font-bold text-amber-900"
+      >
+        第二幕：設立假說
+        <span className="ml-2 text-base font-medium text-amber-700">
+          Setting the Hypotheses
+        </span>
       </h2>
-      <p className="text-lg text-stone-700">
-        在統計學的 <strong>假設檢定 (Hypothesis Testing)</strong> 中，我們不能一開始就認定女士有超能力。我們必須先設定一個保守的起點。
-        你認為 Fisher 當時是怎麼設定這個實驗的基礎前提的？
+
+      <p className="text-lg leading-relaxed text-stone-700">
+        在看到實驗結果以前，我們必須先指定檢驗的基準。下列哪一項最適合作為這個實驗的虛無假說？
       </p>
-      
-      <div className="grid md:grid-cols-2 gap-4 mt-6">
-        <button 
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <button
+          type="button"
           onClick={() => setHypothesisChoice('A')}
-          className={`p-6 border-2 rounded-xl text-left transition-all ${hypothesisChoice === 'A' ? 'border-red-500 bg-red-50' : 'border-stone-300 hover:border-amber-500 hover:bg-amber-50'}`}
+          aria-pressed={hypothesisChoice === 'A'}
+          className={`rounded-xl border-2 p-6 text-left transition-all focus:outline-none focus:ring-4 focus:ring-amber-200 ${
+            hypothesisChoice === 'A'
+              ? 'border-red-500 bg-red-50'
+              : 'border-stone-300 hover:border-amber-500 hover:bg-amber-50'
+          }`}
         >
-          <h3 className="font-bold text-xl text-stone-800 mb-2">選項 A</h3>
-          <p className="text-stone-600">假設女士真的有超乎常人的味覺，絕對喝得出來不同。</p>
+          <h3 className="mb-2 text-xl font-bold text-stone-800">選項 A</h3>
+          <p className="text-stone-600">女士確實能分辨兩種沖泡順序。</p>
         </button>
-        <button 
+
+        <button
+          type="button"
           onClick={() => setHypothesisChoice('B')}
-          className={`p-6 border-2 rounded-xl text-left transition-all ${hypothesisChoice === 'B' ? 'border-green-500 bg-green-50' : 'border-stone-300 hover:border-amber-500 hover:bg-amber-50'}`}
+          aria-pressed={hypothesisChoice === 'B'}
+          className={`rounded-xl border-2 p-6 text-left transition-all focus:outline-none focus:ring-4 focus:ring-amber-200 ${
+            hypothesisChoice === 'B'
+              ? 'border-green-600 bg-green-50'
+              : 'border-stone-300 hover:border-amber-500 hover:bg-amber-50'
+          }`}
         >
-          <h3 className="font-bold text-xl text-stone-800 mb-2">選項 B</h3>
-          <p className="text-stone-600">假設女士完全喝不出來，她選對純粹只是運氣好（隨機瞎猜）。</p>
+          <h3 className="mb-2 text-xl font-bold text-stone-800">選項 B</h3>
+          <p className="text-stone-600">
+            女士的判斷與真實沖泡方式無關，沒有優於隨機猜測的正向辨別能力。
+          </p>
         </button>
       </div>
 
       {hypothesisChoice && (
-        <div className={`p-6 rounded-lg mt-6 shadow-inner ${hypothesisChoice === 'B' ? 'bg-green-100 text-green-900' : 'bg-red-100 text-red-900'}`}>
+        <div
+          className={`rounded-xl p-6 shadow-inner ${
+            hypothesisChoice === 'B'
+              ? 'bg-green-100 text-green-950'
+              : 'bg-red-100 text-red-950'
+          }`}
+          role="status"
+        >
           {hypothesisChoice === 'B' ? (
-            <div>
-              <h4 className="font-bold text-xl mb-2 flex items-center">✅ 答對了！這就是統計學的核心！</h4>
-              <p>
-                這被稱為 <strong>虛無假說 (Null Hypothesis, $H_0$)</strong>。我們總是假設「沒有特殊效應」、「沒有差異」或「只是隨機」。<br/><br/>
-                在這個例子中，$H_0$ 就是：「女士沒有辨別能力，她只是在瞎猜」。接下來所有的機率計算，都是建立在「如果她只是瞎猜」的前提下進行的！
+            <div className="space-y-4">
+              <h3 className="text-xl font-bold">答對了：選項 B 是檢驗的基準</h3>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg bg-white/70 p-4">
+                  <p className="mb-1 font-bold">
+                    <HypothesisLabel subscript="0" />：虛無假說
+                  </p>
+                  <p>判斷與真實沖泡方式無關，結果來自隨機猜測。</p>
+                </div>
+                <div className="rounded-lg bg-white/70 p-4">
+                  <p className="mb-1 font-bold">
+                    <HypothesisLabel subscript="1" />：對立假說
+                  </p>
+                  <p>正確辨別能力優於隨機猜測。</p>
+                </div>
+              </div>
+
+              <p className="leading-relaxed">
+                這是一個<strong>單尾檢定</strong>，因為只有「較多正確分類」才支持
+                <HypothesisLabel subscript="1" />。顯著水準也應在看見結果前設定；本教材採用{' '}
+                <strong>α = 0.05</strong>。
               </p>
-              <div className="flex justify-end mt-4">
-                <button 
-                  onClick={() => setStep(3)}
-                  className="bg-green-700 hover:bg-green-800 text-white px-6 py-2 rounded shadow transition-colors font-medium"
+
+              <div className="flex flex-wrap justify-between gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setStep(1)}
+                  className="rounded-lg border border-green-800 px-5 py-2 font-medium hover:bg-white/60 focus:outline-none focus:ring-4 focus:ring-green-200"
                 >
-                  開始實驗設計 ➡️
+                  ← 上一步
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep(3)}
+                  className="rounded-lg bg-green-800 px-6 py-2 font-medium text-white shadow hover:bg-green-900 focus:outline-none focus:ring-4 focus:ring-green-300"
+                >
+                  進入實驗設計 →
                 </button>
               </div>
             </div>
           ) : (
             <div>
-              <h4 className="font-bold text-xl mb-2 flex items-center">❌ 再想想看...</h4>
-              <p>如果我們一開始就假設她有能力，那就沒有驗證的必要了。科學需要從懷疑出發，請嘗試另一個選項！</p>
+              <h3 className="mb-2 text-xl font-bold">再想想看</h3>
+              <p className="leading-relaxed">
+                「女士確實能分辨」是我們想尋找證據支持的方向，比較適合作為對立假說。虛無假說必須提供一個可以計算隨機結果分配的基準。
+              </p>
             </div>
           )}
         </div>
       )}
-    </div>
+
+      {hypothesisChoice !== 'B' && (
+        <button
+          type="button"
+          onClick={() => setStep(1)}
+          className="rounded-lg border border-stone-400 px-5 py-2 font-medium text-stone-700 hover:bg-stone-100 focus:outline-none focus:ring-4 focus:ring-stone-200"
+        >
+          ← 上一步
+        </button>
+      )}
+    </section>
   );
 
   const renderStep3 = () => (
-    <div className="space-y-6 animate-fade-in">
-      <h2 className="text-2xl font-bold text-amber-900 border-b-2 border-amber-200 pb-2">
-        第三幕：實驗設計 (Experimental Design)
+    <section className="space-y-6 animate-fade-in" aria-labelledby="step-3-title">
+      <h2
+        id="step-3-title"
+        className="border-b-2 border-amber-200 pb-2 text-2xl font-bold text-amber-900"
+      >
+        第三幕：實驗設計
+        <span className="ml-2 text-base font-medium text-amber-700">
+          Experimental Design
+        </span>
       </h2>
-      <p className="text-lg text-stone-700">
-        Fisher 準備了 8 杯茶。其中 4 杯是「先加奶 (Milk-first)」，4 杯是「先加茶 (Tea-first)」。<br/>
-        他告訴女士這個資訊，並請女士品嚐後，<strong>挑出她認為是「先加奶」的 4 杯茶。</strong>
+
+      <p className="text-lg leading-relaxed text-stone-700">
+        Fisher 準備 8 杯茶：4 杯先加奶、4 杯先加茶。他告訴女士這項資訊，並請她選出認為是「先加奶」的 4 杯。
       </p>
-      
-      <div className="bg-stone-50 p-6 rounded-xl border border-stone-200 shadow-sm mt-6">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="font-bold text-lg text-stone-800">換你來當女士！請憑直覺挑出 4 杯「先加奶」的茶：</h3>
-          <span className="bg-amber-200 text-amber-900 px-3 py-1 rounded-full font-bold text-sm">
-            已選: {selectedCupIds.length} / {CUPS_TO_SELECT}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {[
+          ['隨機化', '以隨機順序呈現八杯茶，避免位置或順序形成系統性線索。'],
+          ['盲化', '女士看不到沖泡過程，也不能從杯子標記得知答案。'],
+          ['控制條件', '杯型、茶量、奶量、溫度與等待時間應盡可能一致。'],
+          ['固定邊際', '真實類型與女士的分類都固定為 4 比 4，形成超幾何分配。'],
+        ].map(([title, description]) => (
+          <div key={title} className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <h3 className="mb-1 font-bold text-blue-950">{title}</h3>
+            <p className="text-sm leading-relaxed text-blue-900">{description}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl border border-stone-200 bg-stone-50 p-5 shadow-sm sm:p-6">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h3 className="text-lg font-bold text-stone-800">
+            換你來分類：挑出 4 杯你認為是「先加奶」的茶
+          </h3>
+          <span className="self-start rounded-full bg-amber-200 px-3 py-1 text-sm font-bold text-amber-950 sm:self-auto">
+            已選 {selectedCupIds.length} / {CUPS_TO_SELECT}
           </span>
         </div>
-        
-        <div className="grid grid-cols-4 gap-4">
-          {cups.map((cup, index) => (
-            <button
-              key={cup.id}
-              onClick={() => toggleCupSelection(cup.id)}
-              className={`relative h-32 flex flex-col items-center justify-center rounded-xl border-4 transition-all duration-200 
-                ${selectedCupIds.includes(cup.id) 
-                  ? 'border-amber-600 bg-amber-100 transform scale-105 shadow-md' 
-                  : 'border-transparent bg-white hover:bg-stone-100 shadow'}`}
-            >
-              <div className="text-4xl mb-2">☕</div>
-              <div className="font-mono text-sm text-stone-500">Cup {index + 1}</div>
-              {selectedCupIds.includes(cup.id) && (
-                <div className="absolute top-2 right-2 text-amber-600 text-xl font-bold">✓</div>
-              )}
-            </button>
-          ))}
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
+          {cups.map((cup, index) => {
+            const isSelected = selectedCupIds.includes(cup.id);
+
+            return (
+              <button
+                key={cup.id}
+                type="button"
+                onClick={() => toggleCupSelection(cup.id)}
+                aria-pressed={isSelected}
+                aria-label={`第 ${index + 1} 杯茶${
+                  isSelected ? '，已選為先加奶' : '，尚未選取'
+                }`}
+                className={`relative flex h-28 flex-col items-center justify-center rounded-xl border-4 transition-all focus:outline-none focus:ring-4 focus:ring-amber-200 sm:h-32 ${
+                  isSelected
+                    ? 'scale-[1.03] border-amber-600 bg-amber-100 shadow-md'
+                    : 'border-transparent bg-white shadow hover:bg-stone-100'
+                }`}
+              >
+                <span className="mb-2 text-4xl" aria-hidden="true">
+                  ☕
+                </span>
+                <span className="font-mono text-sm text-stone-600">Cup {index + 1}</span>
+                {isSelected && (
+                  <span
+                    className="absolute right-2 top-2 text-xl font-bold text-amber-700"
+                    aria-hidden="true"
+                  >
+                    ✓
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
-        <div className="flex justify-center mt-8">
-          <button 
+        <div className="mt-8 flex flex-col-reverse items-center justify-between gap-3 sm:flex-row">
+          <button
+            type="button"
+            onClick={() => setStep(2)}
+            className="rounded-lg border border-stone-400 px-5 py-2 font-medium text-stone-700 hover:bg-white focus:outline-none focus:ring-4 focus:ring-stone-200"
+          >
+            ← 上一步
+          </button>
+
+          <button
+            type="button"
             onClick={submitExperiment}
             disabled={selectedCupIds.length !== CUPS_TO_SELECT}
-            className={`px-8 py-3 rounded-full font-bold text-lg shadow-lg transition-all
-              ${selectedCupIds.length === CUPS_TO_SELECT 
-                ? 'bg-amber-600 hover:bg-amber-700 text-white animate-bounce' 
-                : 'bg-stone-300 text-stone-500 cursor-not-allowed'}`}
+            className={`rounded-full px-8 py-3 text-lg font-bold shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-amber-200 ${
+              selectedCupIds.length === CUPS_TO_SELECT
+                ? 'bg-amber-600 text-white hover:bg-amber-700'
+                : 'cursor-not-allowed bg-stone-300 text-stone-500'
+            }`}
           >
-            完成挑選，看結果！(Submit)
+            完成挑選，查看結果
           </button>
         </div>
       </div>
-      
-      <div className="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-400 mt-4">
-        <p className="text-sm text-blue-900">
-          <strong>💡 組合數學 (Combinatorics)：</strong> 從 8 杯中挑選 4 杯，總共有 <code className="bg-blue-100 px-1 rounded">C(8,4) = 70</code> 種可能的組合。如果女士是在瞎猜，她選中任何一種組合的機率都是 1/70。
+
+      <div className="rounded-lg border-l-4 border-blue-500 bg-blue-50 p-4 text-blue-950">
+        <p className="leading-relaxed">
+          <strong>組合數學：</strong>從 8 杯中指定 4 杯為「先加奶」，共有{' '}
+          <code className="rounded bg-white px-2 py-1">C(8,4) = 70</code>{' '}
+          種可能組合。在虛無假說下，每一種組合都同樣可能。
         </p>
       </div>
-    </div>
+    </section>
   );
 
   const renderStep4 = () => {
-    // 互動圖表的當前資料
-    const currentInteractiveData = PROBABILITY_TABLE.find(row => row.correct === interactiveCount);
-    const isInteractiveSignificant = currentInteractiveData.p <= SIGNIFICANCE_LEVEL;
-    
-    // 玩家實際結果的資料
-    const actualResultData = PROBABILITY_TABLE.find(row => row.correct === experimentResult);
-    const isActualSignificant = actualResultData.p <= SIGNIFICANCE_LEVEL;
+    if (experimentResult === null) return null;
+
+    const pointProbability = getPointProbability(interactiveCount);
+    const interactivePValue = getOneSidedPValue(interactiveCount);
+    const actualPointProbability = getPointProbability(experimentResult);
+    const actualPValue = getOneSidedPValue(experimentResult);
+    const isInteractiveSignificant = interactivePValue <= SIGNIFICANCE_LEVEL;
+    const isActualSignificant = actualPValue <= SIGNIFICANCE_LEVEL;
+    const totalCorrectClassifications = experimentResult * 2;
+    const maxProbability = Math.max(
+      ...PROBABILITY_TABLE.map((row) => row.probability),
+    );
 
     return (
-      <div className="space-y-6 animate-fade-in">
-        <h2 className="text-2xl font-bold text-amber-900 border-b-2 border-amber-200 pb-2">
-          第四幕：決策邊界與 P 值 (P-value & Decision Making)
+      <section className="space-y-7 animate-fade-in" aria-labelledby="step-4-title">
+        <h2
+          id="step-4-title"
+          className="border-b-2 border-amber-200 pb-2 text-2xl font-bold text-amber-900"
+        >
+          第四幕：從結果到 p 值
+          <span className="ml-2 text-base font-medium text-amber-700">
+            From Results to the P-value
+          </span>
         </h2>
-        
-        <div className="bg-stone-100 p-6 rounded-xl border border-stone-300 text-center shadow-inner">
-          <h3 className="text-xl text-stone-600 mb-2">你的品茶結果揭曉：</h3>
-          <div className="text-4xl font-black text-amber-700 mb-2">
-            答對了 {experimentResult} 杯！
-          </div>
-          <p className="text-lg text-stone-600">
-            你成功找出了 {experimentResult} 杯真正「先加奶」的茶。
+
+        <div className="rounded-xl border border-stone-300 bg-stone-100 p-6 text-center shadow-inner">
+          <h3 className="mb-2 text-xl text-stone-600">你的分類結果</h3>
+          <p className="mb-2 text-4xl font-black text-amber-700">
+            找對 {experimentResult} / 4 杯先加奶
+          </p>
+          <p className="text-lg text-stone-700">
+            同時也正確排除 {experimentResult} / 4 杯先加茶，因此總共正確分類{' '}
+            <strong>{totalCorrectClassifications} / {TOTAL_CUPS}</strong> 杯。
           </p>
         </div>
 
-        <p className="text-lg text-stone-700 mt-4">
-          現在，讓我們回到最初的<strong>虛無假說 ($H_0$)：假設你完全是瞎猜的</strong>。
-          在瞎猜的前提下，讓我們透過下方互動圖表看看不同結果發生的機率：
-        </p>
-
-        {/* 互動式圖表區塊 */}
-        <div className="bg-white p-6 rounded-xl border-2 border-amber-200 shadow-md my-6">
-          <h3 className="text-xl font-bold text-amber-900 mb-6 text-center flex items-center justify-center gap-2">
-            <span>📊</span> 互動機率分佈圖 (Interactive Probability Distribution)
+        <div className="rounded-xl border-2 border-amber-200 bg-white p-5 shadow-md sm:p-6">
+          <h3 className="mb-2 text-center text-xl font-bold text-amber-950">
+            超幾何機率分配
           </h3>
-          
-          {/* 長條圖 */}
-          <div className="flex justify-around items-end h-48 border-b-2 border-stone-300 pb-2 mb-6">
-            {[0, 1, 2, 3, 4].map(num => {
-              const rowData = PROBABILITY_TABLE.find(r => r.correct === num);
-              const heightPercent = (rowData.p / (36/70)) * 100; // 36/70 是最大的機率值
-              const isSelected = num === interactiveCount;
+          <p className="mb-6 text-center text-sm leading-relaxed text-stone-600">
+            點選長條或移動滑桿。橘色是觀察值，右側藍色長條是更支持
+            <HypothesisLabel subscript="1" /> 的結果；橘色加藍色長條的總機率才是單尾 p 值。
+          </p>
+
+          <div className="flex h-56 items-end justify-around border-b-2 border-stone-300 pb-2">
+            {PROBABILITY_TABLE.map((row) => {
+              const heightPercent = (row.probability / maxProbability) * 100;
+              const isObserved = row.correct === interactiveCount;
+              const isInTail = row.correct >= interactiveCount;
+
               return (
-                <div 
-                  key={num} 
-                  className="flex flex-col items-center w-1/6 cursor-pointer group"
-                  onClick={() => setInteractiveCount(num)}
+                <button
+                  key={row.correct}
+                  type="button"
+                  onClick={() => setInteractiveCount(row.correct)}
+                  aria-pressed={isObserved}
+                  aria-label={`找對 ${row.correct} 杯，機率 ${formatPercent(
+                    row.probability,
+                  )}`}
+                  className="group flex h-full w-[17%] flex-col items-center justify-end focus:outline-none focus:ring-4 focus:ring-amber-200"
                 >
-                  <span className={`text-sm mb-2 transition-colors ${isSelected ? 'font-bold text-amber-700' : 'text-stone-400 group-hover:text-amber-500'}`}>
-                    {(rowData.p * 100).toFixed(1)}%
+                  <span
+                    className={`mb-2 text-xs sm:text-sm ${
+                      isObserved
+                        ? 'font-bold text-amber-800'
+                        : isInTail
+                          ? 'font-semibold text-blue-700'
+                          : 'text-stone-500'
+                    }`}
+                  >
+                    {formatPercent(row.probability)}
                   </span>
-                  <div
-                    className={`w-full rounded-t-md transition-all duration-300 ${isSelected ? 'bg-amber-500 shadow-lg' : 'bg-stone-200 group-hover:bg-amber-300'}`}
+                  <span
+                    className={`block min-h-1 w-full rounded-t-md transition-all duration-300 ${
+                      isObserved
+                        ? 'bg-amber-500 shadow-lg'
+                        : isInTail
+                          ? 'bg-blue-500'
+                          : 'bg-stone-200 group-hover:bg-stone-300'
+                    }`}
                     style={{ height: `${heightPercent}%` }}
-                  ></div>
-                  <span className={`mt-3 font-medium ${isSelected ? 'text-amber-900' : 'text-stone-500'}`}>{num} 杯</span>
-                </div>
+                    aria-hidden="true"
+                  />
+                  <span
+                    className={`mt-3 text-sm font-medium sm:text-base ${
+                      isObserved ? 'text-amber-950' : 'text-stone-600'
+                    }`}
+                  >
+                    {row.correct} 杯
+                  </span>
+                </button>
               );
             })}
           </div>
 
-          {/* 滑桿 Slider */}
-          <div className="px-4 mb-8">
+          <div className="px-2 pb-2 pt-7">
+            <label htmlFor="correct-count-slider" className="sr-only">
+              選擇找對的先加奶杯數
+            </label>
             <input
+              id="correct-count-slider"
               type="range"
               min="0"
               max="4"
+              step="1"
               value={interactiveCount}
-              onChange={(e) => setInteractiveCount(Number(e.target.value))}
-              className="w-full h-2 bg-stone-200 rounded-lg appearance-none cursor-pointer accent-amber-600"
+              onChange={(event) => setInteractiveCount(Number(event.target.value))}
+              className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-stone-200 accent-amber-600"
             />
           </div>
 
-          {/* 動態解說 */}
-          <div className={`p-4 rounded-lg border-2 transition-colors ${isInteractiveSignificant ? 'bg-green-50 border-green-400 text-green-900' : 'bg-stone-50 border-stone-300 text-stone-700'}`}>
-            <div className="font-bold text-lg mb-2">當答對 {interactiveCount} 杯時：</div>
-            <p className="mb-2">這在隨機瞎猜的假設下，發生的機率為 <strong>{(currentInteractiveData.p).toFixed(3)}</strong> (即 {(currentInteractiveData.p * 100).toFixed(1)}%)。</p>
-            
-            {/* 增加的計算算式區塊 */}
-            <div className="mt-4 mb-4 p-4 bg-white/60 rounded-md border border-stone-300/50 text-stone-800 text-sm">
-              <div className="font-bold mb-2 flex items-center gap-2">
-                <span>🧮</span> 機率計算過程 (超幾何分配 Hypergeometric Distribution)：
-              </div>
-              <ul className="list-disc list-inside space-y-2 ml-1 text-stone-600">
-                <li>
-                  <strong>總組合數 (分母)：</strong>從 8 杯中選 4 杯 = <code className="bg-white px-2 py-0.5 rounded border border-stone-200 shadow-sm text-amber-900">C(8,4) = 70</code>
-                </li>
-                <li>
-                  <strong>符合的組合數 (分子)：</strong>選對 {interactiveCount} 杯「先加奶」，以及選錯 {4 - interactiveCount} 杯「先加茶」 = <code className="bg-white px-2 py-0.5 rounded border border-stone-200 shadow-sm text-amber-900">{currentInteractiveData.formula} = {currentInteractiveData.ways}</code>
-                </li>
-              </ul>
-              <div className="mt-3 pt-2 border-t border-stone-300/50 font-mono text-base font-bold text-amber-800 text-center bg-white rounded shadow-sm py-2">
-                P = {currentInteractiveData.ways} / 70 ≈ {(currentInteractiveData.p).toFixed(3)}
-              </div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div className="rounded-lg border border-stone-300 bg-stone-50 p-4">
+              <h4 className="mb-2 font-bold text-stone-900">① 恰好發生的機率</h4>
+              <p className="text-sm leading-relaxed text-stone-700">
+                <span className="font-serif italic">P</span>(X = {interactiveCount}) ={' '}
+                <strong>{formatProbability(pointProbability)}</strong> ={' '}
+                <strong>{formatPercent(pointProbability)}</strong>
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-stone-500">
+                這只是單一長條的高度，不一定是 p 值。
+              </p>
             </div>
 
-            <p>
-              {isInteractiveSignificant 
-                ? `✅ 由於機率 <= 0.05 (顯著水準)，這是一個「罕見事件」。我們有足夠的證據拒絕瞎猜假設，承認品茶能力！` 
-                : `❌ 由於機率 > 0.05 (顯著水準)，這個結果在瞎猜下很常見。我們無法拒絕瞎猜的假設。`}
+            <div className="rounded-lg border border-blue-300 bg-blue-50 p-4">
+              <h4 className="mb-2 font-bold text-blue-950">② 單尾 p 值</h4>
+              <p className="text-sm leading-relaxed text-blue-900">
+                <span className="font-serif italic">P</span>(X ≥ {interactiveCount} |{' '}
+                <HypothesisLabel subscript="0" />) ={' '}
+                <strong>{formatProbability(interactivePValue)}</strong> ={' '}
+                <strong>{formatPercent(interactivePValue)}</strong>
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-blue-800">
+                這是橘色觀察值加上其右側所有更極端結果的總機率。
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-lg border border-stone-300 bg-white p-4 text-sm text-stone-700">
+            <p className="mb-2 font-bold text-stone-900">超幾何分配的單點機率</p>
+            <div className="overflow-x-auto rounded bg-stone-50 px-3 py-3 text-center font-mono text-sm sm:text-base">
+              P(X = {interactiveCount}) = [{
+                PROBABILITY_TABLE.find((row) => row.correct === interactiveCount)
+                  ?.formula
+              }] / C(8,4)
+              <br />= {
+                PROBABILITY_TABLE.find((row) => row.correct === interactiveCount)
+                  ?.ways
+              } / 70 = {formatProbability(pointProbability)}
+            </div>
+          </div>
+
+          <div
+            className={`mt-4 rounded-lg border-2 p-4 ${
+              isInteractiveSignificant
+                ? 'border-green-500 bg-green-50 text-green-950'
+                : 'border-stone-300 bg-stone-50 text-stone-800'
+            }`}
+          >
+            <p className="font-bold">
+              當 X = {interactiveCount} 時：p ={' '}
+              {formatProbability(interactivePValue)}{' '}
+              {isInteractiveSignificant ? '≤' : '>'} α = 0.05
+            </p>
+            <p className="mt-2 leading-relaxed">
+              {isInteractiveSignificant
+                ? '這個結果落在單尾拒絕域中，可以拒絕虛無假說。'
+                : '這個結果沒有落在單尾拒絕域中，無法拒絕虛無假說。'}
             </p>
           </div>
         </div>
 
-        <div className={`p-6 rounded-xl border-2 mt-6 shadow-md ${isActualSignificant ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50'}`}>
-          <h3 className="font-bold text-xl mb-4 flex items-center">
-            {isActualSignificant ? '🔬 針對你的實驗結果：具備統計顯著性 (Statistically Significant)' : '🎲 針對你的實驗結果：缺乏證據 (Not Significant)'}
+        <div className="rounded-xl border border-indigo-300 bg-indigo-50 p-5 shadow-sm sm:p-6">
+          <h3 className="mb-4 text-xl font-bold text-indigo-950">
+            動態 2 × 2 列聯表
           </h3>
-          <p className="text-lg leading-relaxed">
-            你實際答對了 {experimentResult} 杯，機率為 {(actualResultData.p).toFixed(3)}。
-          </p>
-          <div className="mt-4 p-4 bg-white/60 rounded-lg">
-            <strong className="text-lg">結論：</strong>
-            {isActualSignificant ? (
-              <span className="text-green-800 ml-2">我們有足夠的證據 <strong>拒絕虛無假說 (Reject H₀)</strong>！你真的具備品茶的能力！</span>
-            ) : (
-              <span className="text-red-800 ml-2">我們 <strong>無法拒絕虛無假說 (Fail to reject H₀)</strong>。目前的數據無法證明你有品茶的能力，可能只是運氣。</span>
-            )}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px] border-collapse bg-white text-center text-sm sm:text-base">
+              <caption className="mb-3 text-left text-sm leading-relaxed text-indigo-900">
+                列與欄的合計都固定為 4，這正是超幾何分配與 Fisher 精確檢定的連結。
+              </caption>
+              <thead>
+                <tr className="bg-indigo-100">
+                  <th className="border border-indigo-200 p-3 text-left">真實沖泡方式</th>
+                  <th className="border border-indigo-200 p-3">判斷先加奶</th>
+                  <th className="border border-indigo-200 p-3">判斷先加茶</th>
+                  <th className="border border-indigo-200 p-3">合計</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th className="border border-indigo-200 p-3 text-left">實際先加奶</th>
+                  <td className="border border-indigo-200 bg-amber-50 p-3 font-bold">
+                    {interactiveCount}
+                  </td>
+                  <td className="border border-indigo-200 p-3">
+                    {CUPS_PER_TYPE - interactiveCount}
+                  </td>
+                  <td className="border border-indigo-200 p-3 font-bold">4</td>
+                </tr>
+                <tr>
+                  <th className="border border-indigo-200 p-3 text-left">實際先加茶</th>
+                  <td className="border border-indigo-200 p-3">
+                    {CUPS_PER_TYPE - interactiveCount}
+                  </td>
+                  <td className="border border-indigo-200 bg-amber-50 p-3 font-bold">
+                    {interactiveCount}
+                  </td>
+                  <td className="border border-indigo-200 p-3 font-bold">4</td>
+                </tr>
+                <tr className="bg-indigo-100">
+                  <th className="border border-indigo-200 p-3 text-left">合計</th>
+                  <td className="border border-indigo-200 p-3 font-bold">4</td>
+                  <td className="border border-indigo-200 p-3 font-bold">4</td>
+                  <td className="border border-indigo-200 p-3 font-bold">8</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
-        {/* 補充說明：統計學的反直覺 */}
-        <div className="bg-blue-50 p-5 rounded-xl border-l-4 border-blue-500 mt-6 shadow-sm">
-          <h4 className="font-bold text-blue-900 text-lg flex items-center gap-2 mb-2">
-            <span>💡</span> 統計學的反直覺 (Statistical Counter-intuition)
-          </h4>
-          <p className="text-blue-800 leading-relaxed">
-            值得注意的是，即使在 4 杯中 <strong>答對了 3 杯</strong>（高達 75% 的準確率！），從機率的角度來看，瞎猜猜中 3 杯的機率仍高達 <strong>22.9%</strong> (P-value ≈ 0.229)。因為它遠大於 0.05 的顯著水準，在嚴格的統計學標準下，我們 <strong>仍然無法證明</strong> 該名女士具備品茶能力。這告訴我們：直覺上的「高準確率」，不一定等於統計上的「證據確鑿」！
+        <div
+          className={`rounded-xl border-2 p-6 shadow-md ${
+            isActualSignificant
+              ? 'border-green-500 bg-green-50'
+              : 'border-amber-500 bg-amber-50'
+          }`}
+        >
+          <h3 className="mb-4 text-xl font-bold text-stone-950">
+            針對你的實驗結果
+          </h3>
+          <div className="grid gap-3 text-sm sm:grid-cols-2 sm:text-base">
+            <p className="rounded-lg bg-white/70 p-3">
+              恰好出現這個結果的機率：
+              <strong>{formatProbability(actualPointProbability)}</strong>
+            </p>
+            <p className="rounded-lg bg-white/70 p-3">
+              單尾 p 值：<strong>{formatProbability(actualPValue)}</strong>
+            </p>
+          </div>
+          <p className="mt-4 text-lg leading-relaxed">
+            {isActualSignificant ? (
+              <>
+                因為 p ≤ 0.05，我們<strong>拒絕虛無假說</strong>。這份結果提供支持正向辨別能力的統計證據；但它不是「能力必然存在」的數學證明，也沒有直接告訴我們能力有多強。
+              </>
+            ) : (
+              <>
+                因為 p &gt; 0.05，我們<strong>無法拒絕虛無假說</strong>。目前資料不足以排除隨機猜測，但這不等於證明你完全沒有辨別能力；樣本數太小也可能使檢定難以偵測真實能力。
+              </>
+            )}
           </p>
         </div>
 
-        {/* 進階觀念：超幾何分配 vs 二項式分配 */}
-        <div className="bg-indigo-50 p-5 rounded-xl border-l-4 border-indigo-500 mt-6 shadow-sm">
-          <h4 className="font-bold text-indigo-900 text-lg flex items-center gap-2 mb-3">
-            <span>🎓</span> 進階觀念：為什麼是超幾何分配？而不是 (1/2)⁴？
-          </h4>
-          <div className="text-indigo-800 space-y-3 leading-relaxed">
+        <div className="rounded-xl border-l-4 border-blue-500 bg-blue-50 p-5 shadow-sm">
+          <h3 className="mb-2 text-lg font-bold text-blue-950">
+            為什麼找對 3 杯仍不顯著？
+          </h3>
+          <p className="leading-relaxed text-blue-900">
+            找對 3/4 杯先加奶，等價於正確分類 6/8 杯。恰好出現這個結果的機率是{' '}
+            <strong>16/70 = 22.9%</strong>；但 p 值還要納入更極端的全對結果，因此是{' '}
+            <strong>(16 + 1)/70 = 24.3%</strong>。高達 75% 的表面準確率，仍不足以在這個小樣本中形成強證據。
+          </p>
+        </div>
+
+        <div className="rounded-xl border-l-4 border-violet-500 bg-violet-50 p-5 shadow-sm">
+          <h3 className="mb-3 text-lg font-bold text-violet-950">
+            為什麼是超幾何分配，而不是 (1/2)⁴？
+          </h3>
+          <div className="space-y-3 leading-relaxed text-violet-900">
             <p>
-              許多初學統計的人會想：「既然每一杯只有『先加奶』或『先加茶』，猜對的機率是 1/2。那連續猜對 4 杯的機率，不就是 <strong>(1/2)⁴ = 1/16 = 0.0625</strong> 嗎？」這其實是誤用了<strong>二項式分配 (Binomial Distribution)</strong>。
+              關鍵不只是「每杯有兩種類型」，而是實驗同時固定了兩個邊際：桌上恰好有 4 杯先加奶，女士也必須恰好選出 4 杯。因此 70 種四杯組合才是虛無假說下的等可能樣本空間。
             </p>
-            <p>
-              這忽略了 Fisher 實驗設計中的一個關鍵條件：他事先告訴了女士<strong>「桌上剛好有 4 杯先加奶、4 杯先加茶」</strong>。
-            </p>
-            <ul className="list-disc list-inside ml-2 space-y-1">
-              <li><strong>二項式分配 (獨立事件)：</strong> 假設每次猜測互不影響（就像每次丟銅板，或者取後放回）。</li>
-              <li><strong>超幾何分配 (Hypergeometric)：</strong> 在已知總數的母體中<strong>「取後不放回」</strong>。當女士挑出第一杯她認為是「先加奶」的茶後，剩下的名額變少了，每一次的選擇都會改變後續的機率！</li>
-            </ul>
-            <div className="bg-white/70 p-4 rounded-lg mt-3 font-mono text-sm border border-indigo-200 overflow-x-auto">
-              <div className="mb-2 text-stone-500 line-through">
-                ❌ 誤用二項式 (獨立猜測)：<br/>
-                P(全對) = (1/2) × (1/2) × (1/2) × (1/2) = 1 / 16 = 0.0625
+            <div className="grid gap-3 text-sm md:grid-cols-2">
+              <div className="rounded-lg bg-white/70 p-4">
+                <strong>二項分配：</strong>每杯獨立作答，而且不限制最後必須各選四杯。
               </div>
-              <div className="text-indigo-900 font-bold mt-3">
-                ✅ 正確使用超幾何 (已知 4奶4茶 總數限制)：<br/>
-                P(全對) = [ C(4,4) × C(4,0) ] / C(8,4) = 1 / 70 ≈ 0.0143
+              <div className="rounded-lg bg-white/70 p-4">
+                <strong>超幾何分配：</strong>已知總數固定，並在固定名額下進行不放回分類。
               </div>
             </div>
-            <p className="text-sm mt-2 opacity-80 italic">
-              這正是大名鼎鼎的「費雪精確檢定 (Fisher's Exact Test)」的數學基礎！
-            </p>
           </div>
         </div>
 
-        {/* 歷史軼事：女士最後到底猜對了沒？ */}
-        <div className="bg-amber-50 p-5 rounded-xl border-l-4 border-amber-500 mt-6 shadow-sm">
-          <h4 className="font-bold text-amber-900 text-lg flex items-center gap-2 mb-2">
-            <span>📜</span> 歷史軼事：結局到底如何？ (Historical Anecdote)
-          </h4>
-          <p className="text-amber-800 leading-relaxed">
-            費雪在 1935 年的著作中，其實並沒有告訴我們當時這位女同事到底猜對了幾杯。但根據費雪女兒後來的說法，這位女士（穆麗爾·布里斯托）當時 <strong>8 杯茶全答對了</strong>（Agresti 2002, p.92）！在僅有 1/70 (約 1.4%) 的瞎猜機率下，她用實力震驚了在場的科學菁英們，也為這場傳奇的下午茶畫下了完美的句點。
+        <div className="rounded-xl border border-cyan-300 bg-cyan-50 p-5 shadow-sm sm:p-6">
+          <h3 className="mb-2 text-xl font-bold text-cyan-950">
+            用模擬驗證理論分配
+          </h3>
+          <p className="mb-4 leading-relaxed text-cyan-900">
+            假設女士完全隨機猜測，讓電腦重複實驗。次數愈多，模擬比例通常愈接近理論機率。
+          </p>
+
+          <div className="mb-5 flex flex-wrap gap-3">
+            {[100, 1000, 10000].map((runs) => (
+              <button
+                key={runs}
+                type="button"
+                onClick={() => runNullSimulation(runs)}
+                className="rounded-lg bg-cyan-800 px-4 py-2 font-medium text-white hover:bg-cyan-900 focus:outline-none focus:ring-4 focus:ring-cyan-200"
+              >
+                模擬 {runs.toLocaleString()} 次
+              </button>
+            ))}
+          </div>
+
+          {simulation ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[540px] border-collapse bg-white text-center text-sm">
+                <thead>
+                  <tr className="bg-cyan-100">
+                    <th className="border border-cyan-200 p-3 text-left">找對杯數</th>
+                    {PROBABILITY_TABLE.map((row) => (
+                      <th key={row.correct} className="border border-cyan-200 p-3">
+                        {row.correct}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th className="border border-cyan-200 p-3 text-left">理論機率</th>
+                    {PROBABILITY_TABLE.map((row) => (
+                      <td key={row.correct} className="border border-cyan-200 p-3">
+                        {formatPercent(row.probability)}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr>
+                    <th className="border border-cyan-200 p-3 text-left">
+                      模擬比例
+                      <span className="block text-xs font-normal text-cyan-800">
+                        n = {simulation.runs.toLocaleString()}
+                      </span>
+                    </th>
+                    {simulation.counts.map((count, index) => (
+                      <td key={index} className="border border-cyan-200 p-3 font-bold">
+                        {formatPercent(count / simulation.runs)}
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="rounded-lg bg-white/70 p-4 text-sm text-cyan-900">
+              選擇模擬次數後，這裡會比較理論機率與模擬比例。
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-5 shadow-sm sm:p-6">
+          <h3 className="mb-2 text-xl font-bold text-emerald-950">
+            樣本數與離散檢定設計器
+          </h3>
+          <p className="mb-5 leading-relaxed text-emerald-900">
+            調整每種類型的杯數。系統會尋找在單尾 α = 0.05 下，最少需要找對幾杯才能拒絕虛無假說。
+          </p>
+
+          <label htmlFor="sample-size-slider" className="mb-2 block font-bold text-emerald-950">
+            每種類型 {designCupsPerType} 杯；總杯數 {designCupsPerType * 2} 杯
+          </label>
+          <input
+            id="sample-size-slider"
+            type="range"
+            min="2"
+            max="8"
+            step="1"
+            value={designCupsPerType}
+            onChange={(event) => setDesignCupsPerType(Number(event.target.value))}
+            className="mb-5 h-2 w-full cursor-pointer appearance-none rounded-lg bg-emerald-200 accent-emerald-700"
+          />
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-lg bg-white/75 p-4">
+              <p className="text-sm text-emerald-800">等可能組合數</p>
+              <p className="mt-1 text-2xl font-bold text-emerald-950">
+                {combination(designCupsPerType * 2, designCupsPerType).toLocaleString()}
+              </p>
+            </div>
+            <div className="rounded-lg bg-white/75 p-4">
+              <p className="text-sm text-emerald-800">單尾拒絕域</p>
+              <p className="mt-1 text-lg font-bold text-emerald-950">
+                {designInfo.criticalCorrect === null
+                  ? '沒有可行的拒絕域'
+                  : `X ≥ ${designInfo.criticalCorrect}`}
+              </p>
+            </div>
+            <div className="rounded-lg bg-white/75 p-4">
+              <p className="text-sm text-emerald-800">實際第一類錯誤率</p>
+              <p className="mt-1 text-2xl font-bold text-emerald-950">
+                {formatPercent(designInfo.actualAlpha, 2)}
+              </p>
+            </div>
+          </div>
+
+          <p className="mt-4 text-sm leading-relaxed text-emerald-900">
+            原始的 4 + 4 設計只有 X = 4 時能拒絕，因此名目 α 雖然是 5%，實際第一類錯誤率只有 1/70 = 1.43%。精確檢定的結果是離散的，所以實際 α 通常不會剛好等於名目水準。
           </p>
         </div>
 
-        <div className="flex justify-center mt-8 space-x-4">
-          <button 
-            onClick={() => { setStep(1); initCups(); }}
-            className="bg-stone-600 hover:bg-stone-700 text-white px-6 py-2 rounded shadow transition-colors font-medium"
+        <div className="rounded-xl border-l-4 border-amber-500 bg-amber-50 p-5 shadow-sm">
+          <h3 className="mb-2 text-lg font-bold text-amber-950">歷史結果應如何表述？</h3>
+          <p className="leading-relaxed text-amber-900">
+            Fisher 在 1935 年的原始著作中沒有記載女士當時的實際表現；後來的歷史回憶則指出 Muriel Bristol 正確分類了全部八杯。較嚴謹的寫法是區分「原始著作沒有報告」與「後來記述稱她全部答對」，而不要把後來的敘述當成原書直接記載的結果。
+          </p>
+        </div>
+
+        <div className="flex flex-col justify-center gap-3 pt-2 sm:flex-row">
+          <button
+            type="button"
+            onClick={restartStory}
+            className="rounded-lg bg-stone-700 px-6 py-3 font-medium text-white shadow hover:bg-stone-800 focus:outline-none focus:ring-4 focus:ring-stone-300"
           >
-            🔄 重新開始故事
+            ↻ 重新開始故事
           </button>
-          <button 
-            onClick={() => { setStep(3); initCups(); }}
-            className="bg-amber-600 hover:bg-amber-700 text-white px-6 py-2 rounded shadow transition-colors font-medium"
+          <button
+            type="button"
+            onClick={repeatExperiment}
+            className="rounded-lg bg-amber-600 px-6 py-3 font-medium text-white shadow hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-200"
           >
-            ☕ 再試喝一次
+            ☕ 再進行一次實驗
           </button>
         </div>
-      </div>
+      </section>
     );
   };
 
   return (
-    <div className="min-h-screen bg-[#f4f1ea] font-sans text-stone-800 py-10 px-4 md:px-8">
-      <div className="max-w-4xl mx-auto">
-        
-        {/* Header */}
-        <header className="mb-10 text-center">
-          <h1 className="text-4xl md:text-5xl font-black text-amber-900 mb-4 tracking-tight">
-            ☕ 女士品茶
-            <span className="block text-2xl md:text-3xl font-medium text-amber-700 mt-2">
-              假設檢定的誕生 (The Birth of Hypothesis Testing)
+    <div className="min-h-screen bg-[#f4f1ea] px-4 py-8 font-sans text-stone-800 md:px-8 md:py-10">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-9 text-center">
+          <h1 className="mb-4 text-4xl font-black tracking-tight text-amber-950 md:text-5xl">
+            <span aria-hidden="true">☕ </span>女士品茶
+            <span className="mt-2 block text-2xl font-medium text-amber-700 md:text-3xl">
+              假設檢定、隨機化與精確推論的經典案例
             </span>
           </h1>
-          <p className="text-stone-500 max-w-2xl mx-auto">
-            一場 1920 年代的下午茶，如何催生出現代科學實驗的黃金標準？
-            跟隨統計學之父 Ronald Fisher 的腳步，親自體驗這場經典實驗。
+          <p className="mx-auto max-w-3xl leading-relaxed text-stone-600">
+            從一場 1920 年代的下午茶出發，親自探索虛無假說、超幾何分配、p 值、Fisher 精確檢定與實驗設計。
           </p>
         </header>
 
-        {/* Progress Tracker */}
-        <div className="flex justify-between items-center mb-8 relative">
-          <div className="absolute left-0 top-1/2 transform -translate-y-1/2 w-full h-1 bg-stone-300 -z-10"></div>
-          {[1, 2, 3, 4].map((s) => (
-            <div 
-              key={s} 
-              className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg border-4 transition-colors duration-300
-                ${step === s ? 'bg-amber-600 border-amber-200 text-white scale-110 shadow-lg' : 
-                  step > s ? 'bg-amber-700 border-amber-700 text-white' : 'bg-stone-200 border-stone-300 text-stone-500'}`}
-            >
-              {s}
-            </div>
-          ))}
-        </div>
+        <nav aria-label="教材進度" className="relative mb-8">
+          <div
+            className="absolute left-0 top-1/2 -z-0 h-1 w-full -translate-y-1/2 bg-stone-300"
+            aria-hidden="true"
+          />
+          <ol className="relative z-10 flex items-center justify-between">
+            {[1, 2, 3, 4].map((stepNumber) => (
+              <li key={stepNumber}>
+                <span
+                  aria-current={step === stepNumber ? 'step' : undefined}
+                  aria-label={`第 ${stepNumber} 步${
+                    step === stepNumber ? '，目前步驟' : ''
+                  }`}
+                  className={`flex h-11 w-11 items-center justify-center rounded-full border-4 text-lg font-bold transition-colors ${
+                    step === stepNumber
+                      ? 'scale-110 border-amber-200 bg-amber-600 text-white shadow-lg'
+                      : step > stepNumber
+                        ? 'border-amber-700 bg-amber-700 text-white'
+                        : 'border-stone-300 bg-stone-100 text-stone-600'
+                  }`}
+                >
+                  {stepNumber}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </nav>
 
-        {/* Content Area */}
-        <main className="bg-white rounded-2xl shadow-xl p-6 md:p-10 border border-stone-200">
+        <main className="rounded-2xl border border-stone-200 bg-white p-5 shadow-xl sm:p-8 md:p-10">
           {step === 1 && renderStep1()}
           {step === 2 && renderStep2()}
           {step === 3 && renderStep3()}
           {step === 4 && renderStep4()}
         </main>
 
-        {/* Footer info */}
-        <footer className="mt-12 text-center text-stone-400 text-sm">
-          <p>這場實驗確立了隨機對照實驗 (Randomized Controlled Trial) 與機率論在科學驗證中的地位。</p>
-          <p className="mt-1">Designed for Statistics & Data Science Education</p>
+        <footer className="mt-10 text-center text-sm leading-relaxed text-stone-500">
+          <p>
+            這個經典案例展示了隨機化、控制、固定邊際與精確機率推論如何共同構成一項可檢驗的實驗。
+          </p>
+          <p className="mt-1">Designed for Statistics, Econometrics & Data Science Education</p>
         </footer>
-
       </div>
     </div>
   );
