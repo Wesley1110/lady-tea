@@ -856,9 +856,9 @@ export default function LadyTastingTea() {
         </div>
 
         <div className="rounded-xl border-l-4 border-amber-500 bg-amber-50 p-5 shadow-sm">
-          <h3 className="mb-2 text-lg font-bold text-amber-950">歷史結果應如何表述？</h3>
+          <h3 className="mb-2 text-lg font-bold text-amber-950">歷史軼事：結局到底如何？ (Historical Anecdote)</h3>
           <p className="leading-relaxed text-amber-900">
-            Fisher 在 1935 年的原始著作中沒有記載女士當時的實際表現；後來的歷史回憶則指出 Muriel Bristol 正確分類了全部八杯。較嚴謹的寫法是區分「原始著作沒有報告」與「後來記述稱她全部答對」，而不要把後來的敘述當成原書直接記載的結果。
+            費雪在 1935 年的著作中，其實並沒有告訴我們當時這位女同事到底猜對了幾杯。但根據費雪女兒後來的說法，這位女士（穆麗爾·布里斯托）當時 8 杯茶全答對了（Agresti 2002, p.92）！在僅有 1/70 (約 1.4%) 的瞎猜機率下，她用實力震驚了在場的科學菁英們，也為這場傳奇的下午茶畫下了完美的句點。
           </p>
         </div>
 
